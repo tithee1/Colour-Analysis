@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Colour Lab – swipe colour analysis</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Figtree:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#161412;--ink:#f3eee8;--dim:#a39b92;--line:#ffffff26;--serif:"Instrument Serif",Georgia,serif;--sans:"Figtree",system-ui,sans-serif}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+#stage{position:fixed;inset:0;touch-action:pan-y;user-select:none}
+canvas{width:100%;height:100%;object-fit:cover;transform:scaleX(-1);display:block}
+video{display:none}
+.top{position:fixed;top:0;left:0;right:0;padding:calc(12px + env(safe-area-inset-top,0px)) 16px 12px;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(#000a,#0000);pointer-events:none}
+.top h1{font:400 26px var(--serif)}
+#status{font-size:13px;color:var(--dim)}
+.bottom{position:fixed;left:0;right:0;bottom:0;padding:48px 16px calc(16px + env(safe-area-inset-bottom,0px));background:linear-gradient(#0000,#000b);text-align:center}
+#name{font:400 40px/1.1 var(--serif);min-height:44px}
+#hint{font-size:13px;color:var(--dim);margin:4px 0 12px}
+.dots{display:flex;gap:5px;justify-content:center;flex-wrap:wrap;margin-bottom:14px}
+.dots i{width:9px;height:9px;border-radius:50%;border:1px solid var(--line);opacity:.45}
+.dots i.on{opacity:1;transform:scale(1.5);border-color:#fff}
+.dots i.fav{box-shadow:0 0 0 2px #fff}
+.row{display:flex;gap:10px;justify-content:center;align-items:center}
+button{font:600 15px var(--sans);color:var(--ink);background:#ffffff1c;border:1px solid var(--line);border-radius:999px;padding:11px 18px;cursor:pointer;backdrop-filter:blur(8px)}
+button:hover{background:#ffffff30}
+button:focus-visible{outline:2px solid #fff;outline-offset:2px}
+button.on{background:var(--ink);color:#161412}
+.round{width:52px;height:52px;padding:0;font-size:20px}
+#heart.on{background:#fff;color:#d0021b}
+#start,#results{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center;gap:16px}
+#results{display:none;overflow:auto;justify-content:flex-start;padding-top:48px}
+#start h2,#results h2{font:400 44px/1.05 var(--serif)}
+#start p,#results p{max-width:420px;color:var(--dim);line-height:1.5}
+.favs{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;max-width:420px}
+.favs span{width:54px;height:54px;border-radius:12px;border:1px solid var(--line)}
+.bars{width:min(420px,100%);display:grid;gap:8px;text-align:left}
+.bar{display:grid;grid-template-columns:70px 1fr 24px;gap:10px;align-items:center;font-size:14px}
+.bar div{height:10px;border-radius:5px;background:#ffffff18;overflow:hidden}
+.bar b{display:block;height:100%;background:var(--ink);width:0;transition:width .5s}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<video id="v" playsinline muted></video>
+<div id="stage"><canvas id="c"></canvas></div>
+<div class="top"><h1>Colour Lab</h1><span id="status">Loading face tracker…</span></div>
+<div class="bottom">
+  <div id="name">&nbsp;</div>
+  <div id="hint">Swipe left or right to change colour</div>
+  <div class="dots" id="dots"></div>
+  <div class="row">
+    <button class="round" id="prev" aria-label="Previous colour">◀</button>
+    <button class="round" id="heart" aria-label="Save as flattering">♥</button>
+    <button class="round" id="next" aria-label="Next colour">▶</button>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <button id="split">Compare with previous</button>
+    <button id="done">See my palette</button>
+  </div>
+</div>
+
+<div id="start">
+  <h2>Which colours<br>suit your face?</h2>
+  <p>Your camera shows a coloured drape under your chin, like a colour analyst would hold up. Swipe through colours and tap ♥ on the ones that make your skin look clearer and brighter. Everything runs on your device; no video is uploaded.</p>
+  <p>Best in daylight, facing a window, with no makeup or filters.</p>
+  <button id="go" style="font-size:18px;padding:14px 30px">Start camera</button>
+  <p id="err" style="color:#ff8a80"></p>
+</div>
+
+<div id="results">
+  <h2 id="rTitle"></h2>
+  <p id="rText"></p>
+  <div class="favs" id="favs"></div>
+  <div class="bars" id="bars"></div>
+  <button id="back">Keep swiping</button>
+</div>
+
+<script type="module">
+import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm";
+
+const SEASONS = {
+  Spring: { info: "warm, clear and bright. Think fresh coral, peach and golden tones.", c: [["Coral","#FF6F61"],["Peach","#FFB07C"],["Sunflower","#FFD23F"],["Turquoise","#2EC4B6"],["Apple green","#8BC34A"],["Camel","#C8A165"],["Salmon","#FA8072"],["Poppy","#E8412C"]] },
+  Summer: { info: "cool, soft and gentle. Think dusty rose, lavender and powder blue.", c: [["Dusty rose","#D8A7B1"],["Lavender","#B7A6D6"],["Powder blue","#9DB9D9"],["Soft teal","#6FA8A0"],["Mauve","#A6728D"],["Slate blue","#6B7FA6"],["Cool pink","#E7A0C0"],["Stone grey","#9AA3AD"]] },
+  Autumn: { info: "warm, muted and rich. Think rust, olive, mustard and deep forest.", c: [["Rust","#B7410E"],["Olive","#6B7A2F"],["Mustard","#D4A017"],["Terracotta","#C8664A"],["Forest","#2F5D3A"],["Chocolate","#5A3A29"],["Burnt orange","#CC5500"],["Deep teal","#1F6F6B"]] },
+  Winter: { info: "cool, deep and high contrast. Think true red, royal blue, emerald and black.", c: [["True red","#D0021B"],["Royal blue","#2255D4"],["Emerald","#0B8A57"],["Fuchsia","#D81B8C"],["Black","#111111"],["Icy blue","#BFE3F5"],["Plum","#5B2A86"],["Pure white","#FFFFFF"]] }
+};
+const deck = Object.entries(SEASONS).flatMap(([s, o]) => o.c.map(([n, h]) => ({ n, h, s })));
+for (let i = deck.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [deck[i], deck[j]] = [deck[j], deck[i]]; }
+
+const $ = id => document.getElementById(id);
+const video = $("v"), cv = $("c"), ctx = cv.getContext("2d");
+let idx = 0, split = false, favs = new Set(), landmarker = null, running = false;
+const hex2rgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+let cur = hex2rgb(deck[0].h);
+
+// dots
+$("dots").innerHTML = deck.map(d => `<i style="background:${d.h}"></i>`).join("");
+
+function update() {
+  const d = deck[idx];
+  $("name").textContent = d.n;
+  [...$("dots").children].forEach((e, i) => { e.classList.toggle("on", i === idx); e.classList.toggle("fav", favs.has(i)); });
+  $("heart").classList.toggle("on", favs.has(idx));
+}
+const go = n => { idx = (idx + n + deck.length) % deck.length; update(); };
+$("next").onclick = () => go(1);
+$("prev").onclick = () => go(-1);
+$("heart").onclick = () => { favs.has(idx) ? favs.delete(idx) : favs.add(idx); update(); };
+$("split").onclick = e => { split = !split; e.target.classList.toggle("on", split); $("hint").textContent = split ? "Left side shows the previous colour, right side the current one" : "Swipe left or right to change colour"; };
+addEventListener("keydown", e => { if (e.key === "ArrowRight") go(1); if (e.key === "ArrowLeft") go(-1); if (e.key === "ArrowUp" || e.key === " ") $("heart").click(); });
+
+// swipe
+let sx = null, sy = null;
+const st = $("stage");
+st.addEventListener("pointerdown", e => { sx = e.clientX; sy = e.clientY; });
+st.addEventListener("pointerup", e => {
+  if (sx === null) return;
+  const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+  if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy)) go(dx < 0 ? 1 : -1);
+  else if (dy < -60 && Math.abs(dy) > Math.abs(dx)) $("heart").click();
+});
+
+// results
+$("done").onclick = () => {
+  const tally = { Spring: 0, Summer: 0, Autumn: 0, Winter: 0 };
+  favs.forEach(i => tally[deck[i].s]++);
+  const total = favs.size, top = Object.entries(tally).sort((a, b) => b[1] - a[1]);
+  $("favs").innerHTML = [...favs].map(i => `<span title="${deck[i].n}" style="background:${deck[i].h}"></span>`).join("");
+  if (!total) { $("rTitle").textContent = "No favourites yet"; $("rText").textContent = "Tap ♥ on the colours that make your face look brighter and more awake, then come back here."; $("bars").innerHTML = ""; }
+  else {
+    const lead = top[0][1] === top[1][1] ? [top[0][0], top[1][0]] : [top[0][0]];
+    $("rTitle").textContent = lead.length > 1 ? `${lead[0]} or ${lead[1]}` : lead[0];
+    $("rText").textContent = lead.length > 1
+      ? `Your favourites split evenly, so you may sit between these seasons. Try the compare mode on your top picks.`
+      : `Most of your favourites are ${lead[0]} colours: ${SEASONS[lead[0]].info}`;
+    $("bars").innerHTML = top.map(([s, n]) => `<div class="bar"><span>${s}</span><div><b style="width:${total ? n / total * 100 : 0}%"></b></div><span>${n}</span></div>`).join("");
+  }
+  $("results").style.display = "flex";
+};
+$("back").onclick = () => $("results").style.display = "none";
+
+// face tracking
+const sm = { cx: 0, cy: 0, fw: 0, fh: 0, roll: 0, init: false, seen: 0 };
+const lerp = (a, b, t) => a + (b - a) * t;
+
+function drape(hex, side) {
+  // local frame: origin at chin, +y down, rotated with the head. side: 0 whole, -1 screen-right half, 1 screen-left half
+  const { fw, fh } = sm, W = fw * 2.2, H = cv.height * 2;
+  ctx.save();
+  ctx.translate(sm.cx, sm.cy); ctx.rotate(sm.roll);
+  if (side) { ctx.beginPath(); side > 0 ? ctx.rect(0, -H, W * 2, H * 2) : ctx.rect(-W * 2, -H, W * 2, H * 2); ctx.clip(); }
+  ctx.beginPath();
+  ctx.moveTo(-W, H); ctx.lineTo(-W, fh * 0.95);
+  ctx.quadraticCurveTo(-fw * 0.85, fh * 0.55, -fw * 0.36, fh * 0.34);
+  ctx.quadraticCurveTo(0, fh * 0.78, fw * 0.36, fh * 0.34);
+  ctx.quadraticCurveTo(fw * 0.85, fh * 0.55, W, fh * 0.95);
+  ctx.lineTo(W, H); ctx.closePath();
+  ctx.fillStyle = hex; ctx.fill();
+  const g = ctx.createLinearGradient(0, 0, 0, fh * 2);
+  g.addColorStop(0, "rgba(0,0,0,.22)"); g.addColorStop(.5, "rgba(255,255,255,.05)"); g.addColorStop(1, "rgba(0,0,0,.18)");
+  ctx.fillStyle = g; ctx.fill();
+  ctx.restore();
+}
+
+function frame() {
+  requestAnimationFrame(frame);
+  if (!running || video.readyState < 2) return;
+  if (cv.width !== video.videoWidth) { cv.width = video.videoWidth; cv.height = video.videoHeight; }
+  ctx.drawImage(video, 0, 0, cv.width, cv.height);
+  const res = landmarker.detectForVideo(video, performance.now());
+  const lm = res.faceLandmarks && res.faceLandmarks[0];
+  if (lm) {
+    const w = cv.width, h = cv.height, P = i => [lm[i].x * w, lm[i].y * h];
+    const [lx, ly] = P(234), [rx, ry] = P(454), [tx, ty] = P(10), [cx, cy] = P(152);
+    const t = sm.init ? 0.4 : 1;
+    sm.cx = lerp(sm.cx, cx, t); sm.cy = lerp(sm.cy, cy, t);
+    sm.fw = lerp(sm.fw, Math.hypot(rx - lx, ry - ly), t);
+    sm.fh = lerp(sm.fh, Math.hypot(cx - tx, cy - ty), t);
+    sm.roll = lerp(sm.roll, Math.atan2(ry - ly, rx - lx), t);
+    sm.init = true; sm.seen = performance.now();
+    $("status").textContent = "Face tracked";
+  } else if (performance.now() - sm.seen > 600) {
+    $("status").textContent = "Face the camera so the drape can find you";
+  }
+  if (!sm.init) return;
+  const tgt = hex2rgb(deck[idx].h);
+  cur = cur.map((v, i) => lerp(v, tgt[i], 0.3));
+  const curHex = `rgb(${cur.map(Math.round)})`;
+  if (split) { drape(deck[(idx - 1 + deck.length) % deck.length].h, 1); drape(curHex, -1); }
+  else drape(curHex, 0);
+}
+
+async function init() {
+  const fs = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+  const opts = d => ({ baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task", delegate: d }, runningMode: "VIDEO", numFaces: 1 });
+  try { landmarker = await FaceLandmarker.createFromOptions(fs, opts("GPU")); }
+  catch { landmarker = await FaceLandmarker.createFromOptions(fs, opts("CPU")); }
+  $("status").textContent = "Ready";
+}
+const ready = init().catch(e => { $("err").textContent = "Could not load the face tracker. Check your internet connection. " + e.message; });
+
+$("go").onclick = async () => {
+  $("err").textContent = "";
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    video.srcObject = stream; await video.play();
+    await ready;
+    if (!landmarker) return;
+    running = true; $("start").style.display = "none"; update(); frame();
+  } catch (e) {
+    $("err").textContent = "Camera unavailable: " + e.message + ". Allow camera access, and open this page from localhost or https.";
+  }
+};
+update();
+</script>
+</body>
+</html>
